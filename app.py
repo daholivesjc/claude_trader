@@ -289,27 +289,103 @@ def _exec_buscar_noticias_setor(setor: str, limite: int = 5) -> str:
     return asyncio.run(_buscar_noticias_setor(setor, limite))
 
 
+_FUNDAMENTUS_RENAME = {
+    "Cotação": "cotacao", "P/L": "pl", "P/VP": "pvp", "PSR": "psr",
+    "Div.Yield": "dy", "P/Ativo": "pa", "P/Cap.Giro": "pcg", "P/EBIT": "pebit",
+    "P/Ativ Circ.Liq": "pacl", "EV/EBIT": "evebit", "EV/EBITDA": "evebitda",
+    "Mrg Ebit": "mrgebit", "Mrg. Líq.": "mrgliq", "ROIC": "roic", "ROE": "roe",
+    "Liq. Corr.": "liqc", "Liq.2meses": "liq2m", "Patrim. Líq": "patrliq",
+    "Dív.Brut/ Patrim.": "divbpatr", "Cresc. Rec.5a": "c5y",
+}
+
+_FUNDAMENTUS_PCT_COLS = ["Div.Yield", "Mrg Ebit", "Mrg. Líq.", "ROIC", "ROE", "Cresc. Rec.5a"]
+
+
+def _scrape_fundamentus_direto() -> pd.DataFrame:
+    """Scraping direto do fundamentus.com.br sem depender do módulo (evita requests_cache)."""
+    import io
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    url = "http://www.fundamentus.com.br/resultado.php"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Referer": "http://www.fundamentus.com.br/",
+    }
+
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+
+    resp = session.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    df_raw = pd.read_html(io.StringIO(resp.text), decimal=",", thousands=".")[0]
+
+    # Converter colunas percentuais de string para float
+    for col in _FUNDAMENTUS_PCT_COLS:
+        if col in df_raw.columns:
+            df_raw[col] = (
+                df_raw[col]
+                .astype(str)
+                .str.replace("%", "", regex=False)
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False)
+                .astype(float) / 100
+            )
+
+    df_raw.index = df_raw["Papel"]
+    df_raw.drop("Papel", axis="columns", inplace=True)
+    df_raw.sort_index(inplace=True)
+
+    df = pd.DataFrame()
+    for orig, novo in _FUNDAMENTUS_RENAME.items():
+        if orig in df_raw.columns:
+            df[novo] = df_raw[orig]
+
+    df = df.drop_duplicates(keep="first")
+    df.index.name = "papel"
+    return df
+
+
 def _obter_dados_fundamentus(retries: int = 3) -> tuple[bool, str | object]:
-    """Obtém dados do Fundamentus com retry logic.
+    """Tenta scraping direto primeiro; usa módulo fundamentus como fallback.
 
     Retorna: (sucesso, dados_ou_erro)
     """
     import time
 
+    ultimo_erro = ""
+
+    # Tentativa 1: scraping direto (sem requests_cache, headers modernos)
     for tentativa in range(retries):
+        try:
+            df = _scrape_fundamentus_direto()
+            if df is not None and not df.empty:
+                return True, df
+        except Exception as e:
+            ultimo_erro = f"scraping direto: {e}"
+            if tentativa < retries - 1:
+                time.sleep(2 ** tentativa)
+
+    # Tentativa 2: fallback para o módulo fundamentus
+    if FUNDAMENTUS_OK:
         try:
             df = fundamentus.get_resultado()
             if df is not None and not df.empty:
                 return True, df
         except Exception as e:
-            erro_msg = str(e)
-            if tentativa < retries - 1:
-                tempo_espera = 2 ** tentativa  # exponential backoff: 1s, 2s, 4s
-                time.sleep(tempo_espera)
-            else:
-                return False, erro_msg
+            ultimo_erro = f"módulo fundamentus: {e}"
 
-    return False, "Fundamentus indisponível após várias tentativas"
+    return False, ultimo_erro
 
 
 def _exec_executar_screening(
