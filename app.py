@@ -289,6 +289,29 @@ def _exec_buscar_noticias_setor(setor: str, limite: int = 5) -> str:
     return asyncio.run(_buscar_noticias_setor(setor, limite))
 
 
+def _obter_dados_fundamentus(retries: int = 3) -> tuple[bool, str | object]:
+    """Obtém dados do Fundamentus com retry logic.
+
+    Retorna: (sucesso, dados_ou_erro)
+    """
+    import time
+
+    for tentativa in range(retries):
+        try:
+            df = fundamentus.get_resultado()
+            if df is not None and not df.empty:
+                return True, df
+        except Exception as e:
+            erro_msg = str(e)
+            if tentativa < retries - 1:
+                tempo_espera = 2 ** tentativa  # exponential backoff: 1s, 2s, 4s
+                time.sleep(tempo_espera)
+            else:
+                return False, erro_msg
+
+    return False, "Fundamentus indisponível após várias tentativas"
+
+
 def _exec_executar_screening(
     periodo: str = "3mo",
     setor: str | None = None,
@@ -299,10 +322,20 @@ def _exec_executar_screening(
     if not YFINANCE_OK:
         return "yfinance não instalado."
 
-    try:
-        df = fundamentus.get_resultado()
-    except Exception as e:
-        return f"Erro Fundamentus: {e}"
+    sucesso, resultado = _obter_dados_fundamentus(retries=3)
+    if not sucesso:
+        return (
+            "❌ **Erro ao acessar dados do Fundamentus**\n\n"
+            f"Detalhe: {resultado}\n\n"
+            "**Possíveis causas:**\n"
+            "- Fundamentus pode estar temporariamente indisponível\n"
+            "- Problema de conexão ou timeout\n"
+            "- Restrição de IP do Streamlit Cloud\n\n"
+            "**Solução:** Tente novamente em alguns minutos. "
+            "Se o problema persistir, você pode rodar localmente com `streamlit run app.py`"
+        )
+
+    df = resultado
 
     try:
         df_filt = df[
@@ -524,29 +557,28 @@ def _exec_analisar_acao(ticker: str, periodo: str = "3mo") -> str:
     if var7d is not None:
         linhas.append(f"- **Variação:** 7d: {var7d:+.1f}% | 15d: {var15d:+.1f}% | 30d: {var30d:+.1f}%")
 
-    try:
-        df_all = fundamentus.get_resultado()
-        if ticker in df_all.index:
-            row = df_all.loc[ticker]
-            roe_pct = float(row["roe"]) * 100
-            mrgebit_pct = float(row["mrgebit"]) * 100
-            mrgliq_pct = float(row["mrgliq"]) * 100
-            divbpatr = float(row["divbpatr"])
-            pvp = float(row["pvp"])
+    sucesso_fund, df_all = _obter_dados_fundamentus(retries=2)
+    if sucesso_fund and ticker in df_all.index:
+        row = df_all.loc[ticker]
+        roe_pct = float(row["roe"]) * 100
+        mrgebit_pct = float(row["mrgebit"]) * 100
+        mrgliq_pct = float(row["mrgliq"]) * 100
+        divbpatr = float(row["divbpatr"])
+        pvp = float(row["pvp"])
 
-            def check(ok: bool) -> str:
-                return "✅" if ok else "❌"
+        def check(ok: bool) -> str:
+            return "✅" if ok else "❌"
 
-            linhas.append("\n### Filtro Fundamentalista")
-            linhas.append("| Critério | Valor | Threshold | Status |")
-            linhas.append("|----------|-------|-----------|--------|")
-            linhas.append(f"| ROE | {roe_pct:.1f}% | > 15% | {check(roe_pct > 15)} |")
-            linhas.append(f"| Margem EBIT | {mrgebit_pct:.1f}% | > 10% | {check(mrgebit_pct > 10)} |")
-            linhas.append(f"| Margem Líquida | {mrgliq_pct:.1f}% | > 10% | {check(mrgliq_pct > 10)} |")
-            linhas.append(f"| Dívida/Patrimônio | {divbpatr:.2f}x | < 3x | {check(divbpatr < 3)} |")
-            linhas.append(f"| P/VP | {pvp:.2f}x | > 1x | {check(pvp > 1)} |")
-    except Exception as e:
-        linhas.append(f"\n*Dados fundamentalistas não disponíveis: {e}*")
+        linhas.append("\n### Filtro Fundamentalista")
+        linhas.append("| Critério | Valor | Threshold | Status |")
+        linhas.append("|----------|-------|-----------|--------|")
+        linhas.append(f"| ROE | {roe_pct:.1f}% | > 15% | {check(roe_pct > 15)} |")
+        linhas.append(f"| Margem EBIT | {mrgebit_pct:.1f}% | > 10% | {check(mrgebit_pct > 10)} |")
+        linhas.append(f"| Margem Líquida | {mrgliq_pct:.1f}% | > 10% | {check(mrgliq_pct > 10)} |")
+        linhas.append(f"| Dívida/Patrimônio | {divbpatr:.2f}x | < 3x | {check(divbpatr < 3)} |")
+        linhas.append(f"| P/VP | {pvp:.2f}x | > 1x | {check(pvp > 1)} |")
+    elif not sucesso_fund:
+        linhas.append(f"\n*Dados fundamentalistas não disponíveis no momento*")
 
     return "\n".join(linhas)
 
