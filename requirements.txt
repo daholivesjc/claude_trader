@@ -1,0 +1,21 @@
+# ClaudeTrader — App principal (Streamlit + LLM + análise B3)
+streamlit>=1.30
+openai>=1.40
+python-dotenv>=1.0
+
+# Análise de mercado
+yfinance>=0.2.40
+fundamentus>=0.3.0
+pandas>=2.0
+numpy>=1.26
+
+# Geração de PDF (scripts/generate_screening_pdf.py)
+weasyprint>=60.0
+markdown>=3.5
+
+# MCP server (mcp-b3-news/)
+mcp>=1.0.0
+httpx>=0.27.0
+feedparser>=6.0.11
+beautifulsoup4>=4.12.0
+lxml>=5.0.0

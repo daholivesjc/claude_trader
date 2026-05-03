@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "b3-news": {
+      "command": "python3",
+      "args": [
+        "/media/daholive/dell_stg_ext/10-Projetos/00-ClaudeTrader/mcp-b3-news/server.py"
+      ],
+      "env": {
+        "B3_DECISIONS_DIR": "/media/daholive/dell_stg_ext/10-Projetos/00-ClaudeTrader/.claude/memory/investment-decisions"
+      }
+    }
+  }
+}
