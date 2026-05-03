@@ -295,10 +295,35 @@ _FUNDAMENTUS_RENAME = {
     "P/Ativ Circ.Liq": "pacl", "EV/EBIT": "evebit", "EV/EBITDA": "evebitda",
     "Mrg Ebit": "mrgebit", "Mrg. Líq.": "mrgliq", "ROIC": "roic", "ROE": "roe",
     "Liq. Corr.": "liqc", "Liq.2meses": "liq2m", "Patrim. Líq": "patrliq",
-    "Dív.Brut/ Patrim.": "divbpatr", "Cresc. Rec.5a": "c5y",
+    "Dív.Líq/ Patrim.": "divbpatr",   # site mudou de Bruta para Líquida
+    "Dív.Brut/ Patrim.": "divbpatr",  # manter compatibilidade com versão antiga
+    "Cresc. Rec.5a": "c5y",
 }
 
 _FUNDAMENTUS_PCT_COLS = ["Div.Yield", "Mrg Ebit", "Mrg. Líq.", "ROIC", "ROE", "Cresc. Rec.5a"]
+
+
+def _parse_numero_br(serie: pd.Series) -> pd.Series:
+    """Converte coluna numérica pt-BR (string) para float."""
+    return (
+        serie.astype(str)
+        .str.replace(r"[^\d,\-]", "", regex=True)  # remove tudo exceto dígitos, vírgula e sinal
+        .str.replace(",", ".", regex=False)
+        .replace("", float("nan"))
+        .astype(float)
+    )
+
+
+def _parse_pct_br(serie: pd.Series) -> pd.Series:
+    """Converte coluna percentual pt-BR (ex: '45,56%') para float (0.4556)."""
+    return (
+        serie.astype(str)
+        .str.replace("%", "", regex=False)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .replace("", float("nan"))
+        .astype(float) / 100
+    )
 
 
 def _scrape_fundamentus_direto() -> pd.DataFrame:
@@ -328,19 +353,23 @@ def _scrape_fundamentus_direto() -> pd.DataFrame:
     resp = session.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
 
-    df_raw = pd.read_html(io.StringIO(resp.text), decimal=",", thousands=".")[0]
+    # flavor="lxml" garante retorno em dtype nativo (não pyarrow string)
+    df_raw = pd.read_html(
+        io.StringIO(resp.text), decimal=",", thousands=".", flavor="lxml"
+    )[0]
 
-    # Converter colunas percentuais de string para float
+    # Converter percentuais (chegam como string "45,56%")
     for col in _FUNDAMENTUS_PCT_COLS:
         if col in df_raw.columns:
-            df_raw[col] = (
-                df_raw[col]
-                .astype(str)
-                .str.replace("%", "", regex=False)
-                .str.replace(".", "", regex=False)
-                .str.replace(",", ".", regex=False)
-                .astype(float) / 100
-            )
+            df_raw[col] = _parse_pct_br(df_raw[col])
+
+    # Garantir que colunas numéricas não fiquem como string (pyarrow edge-case)
+    for col in df_raw.columns:
+        if col != "Papel" and df_raw[col].dtype == object:
+            try:
+                df_raw[col] = _parse_numero_br(df_raw[col])
+            except Exception:
+                pass
 
     df_raw.index = df_raw["Papel"]
     df_raw.drop("Papel", axis="columns", inplace=True)
@@ -348,8 +377,18 @@ def _scrape_fundamentus_direto() -> pd.DataFrame:
 
     df = pd.DataFrame()
     for orig, novo in _FUNDAMENTUS_RENAME.items():
-        if orig in df_raw.columns:
+        if orig in df_raw.columns and novo not in df.columns:
             df[novo] = df_raw[orig]
+
+    # Garantir que todas as colunas são float64 (pyarrow pode manter como string)
+    for col in df.columns:
+        if df[col].dtype == object or str(df[col].dtype).startswith("str"):
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False)
+                .pipe(pd.to_numeric, errors="coerce")
+            )
 
     df = df.drop_duplicates(keep="first")
     df.index.name = "papel"
